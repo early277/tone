@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Polar Pitch Map — Disk physics (mass+damping), all MIDI merge</title>
+<title>Polar Pitch Map — Disk physics (mass+damping), selectable torque scope, all MIDI merge</title>
 <style>
   html,body{margin:0;height:100%;background:#111;color:#ddd;font:14px system-ui}
   #ui{position:fixed;top:8px;left:8px;gap:12px;display:flex;flex-wrap:wrap;align-items:center;z-index:2}
@@ -22,7 +22,7 @@
     <select id="midiDev"></select>
   </label>
   <label id="allWrap" style="display:none;">All inputs
-    <input id="midiAll" type="checkbox">
+    <input id="midiAll" type="checkbox" checked>
   </label>
 
   <label id="fileWrap" style="display:none;">
@@ -83,6 +83,14 @@
   <label>orient
     <button id="orient">reverse</button>
     <span id="orientVal">reverse</span>
+  </label>
+
+  <!-- トルク無効領域の選択 -->
+  <label>トルク無効領域
+    <select id="exclude">
+      <option value="filled" selected>塗りつぶし</option>
+      <option value="unfilled">非塗りつぶし</option>
+    </select>
   </label>
 
   <!-- UI不透明度 10–100% -->
@@ -169,6 +177,8 @@ const frameSel = document.getElementById('frame');
 const orientBtn = document.getElementById('orient');
 const orientVal = document.getElementById('orientVal');
 
+const excludeSel = document.getElementById('exclude');
+
 const uiopSlider = document.getElementById('uiop');
 const uiopVal = document.getElementById('uiopVal');
 
@@ -192,6 +202,8 @@ mode.onchange = ()=>{
   mfCtrl.style.display  = (m==='midifile') ? 'flex' : 'none';
   const mic = (m==='mic');
   gainSlider.disabled = !mic; detSlider.disabled = !mic; monSlider.disabled = !mic;
+  // MIDI Inに切り替え時は自動で全入力を有効
+  if(midiin){ midiAll.checked = true; connectMIDIAccordingToUI(); }
 };
 
 /* ===== Helpers ===== */
@@ -232,20 +244,23 @@ function estimateTonalityAngle(){
 }
 
 /* ===== State ===== */
-let toneCenter = ANG0;               // waterモード用。毎フレーム即時更新
+let toneCenter = ANG0;               // waterモード用
 let gravIdx = 6;                     // 初期=下向き
 let gravAngle = baseAngleFromFifthIndex(gravIdx);
 let worldRot = 0;                    // 円盤回転角（描画に加算）
 
 // 物理 (disk)
-let diskAngle = 0;                   // 角度
-let diskOmega = 0;                   // 角速度 [rad/s]
-let diskMass = 1.0;                  // 慣性（Iスケール）
+let diskAngle = 0;
+let diskOmega = 0;                   // [rad/s]
+let diskMass = 1.0;
 let dampPerSec = 0.15;               // 0..1
+let excludeMode = excludeSel.value;  // 'filled' or 'unfilled'
 
 gravSlider.oninput = ()=>{ gravIdx = parseInt(gravSlider.value,10); gravAngle = baseAngleFromFifthIndex(gravIdx); gravVal.textContent = `${gravIdx*30}°`; };
 orientVal.textContent = (ORIENT===1?'normal':'reverse');
 orientBtn.onclick = ()=>{ ORIENT*=-1; orientVal.textContent=(ORIENT===1?'normal':'reverse'); gravAngle = baseAngleFromFifthIndex(gravIdx); };
+
+excludeSel.onchange = ()=>{ excludeMode = excludeSel.value; };
 
 function applyUIOpacity(){
   const a = Math.max(0.1, Math.min(1, parseInt(uiopSlider.value,10)/100));
@@ -261,16 +276,15 @@ function updateDamp(){ const p = parseInt(dampSlider.value,10); dampPerSec = p/1
 updateDamp(); dampSlider.oninput = updateDamp;
 
 /* ===== Draw state ===== */
-const activeNotes = new Map();                  // midi -> vel(0..1)
-let lastMicPCWeights = new Float32Array(12);    // Mic PC重み（五度順）
-let currentMicPeaks = [];                       // [{midi, vel}] 残像なし
+const activeNotes = new Map();
+let lastMicPCWeights = new Float32Array(12);
+let currentMicPeaks = [];
 
 /* ===== 描画（点・結線・LOW/HIGH） ===== */
 function drawNotes(points){
   if(!points.length) return;
   const {rMax, step}=ringParams(); const cx=cv.width/2, cy=cv.height/2;
 
-  // LOW/HIGH
   let low=null, high=null;
   for(const p of points){
     const f=midiToHz(p.midi);
@@ -286,14 +300,12 @@ function drawNotes(points){
   ring(low,'rgba(0,200,255,0.95)','LOW');
   ring(high,'rgba(255,160,0,0.95)','HIGH');
 
-  // 点
   for(const p of points){
     const f=midiToHz(p.midi), theta=mapAngleByFifths(p.midi), rAbs=radiusFromFreq(f, rMax, step), {x,y}=polarToXY(cx,cy,rAbs,theta);
     const radius=4+12*p.vel, alpha=0.3+0.6*p.vel;
     ctx.beginPath(); ctx.fillStyle=`rgba(255,255,255,${alpha})`; ctx.arc(x,y,radius,0,2*Math.PI); ctx.fill();
   }
 
-  // 隣接結線（低→高）
   if(points.length>=2){
     const xs = points.map(p=>({m:p.midi,f:midiToHz(p.midi)})).sort((a,b)=>a.f-b.f);
     ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.8)';
@@ -309,9 +321,10 @@ function drawNotes(points){
 }
 
 /* ===== Physics torque from points (disk) ===== */
-function torqueFromPoints(points, gravAngle, rMax){
+function torqueFromPoints(points, gravAngle, rMax, excludeMode){
   // τ = Σ m_i * r_norm * sin(θ_i - g)
-  // 影響しない範囲：塗りつぶし半円（|θ-g|≤90° ≡ cos(d)≥0）→除外
+  // 無効領域: 'filled' → |θ-g|≤90°（cos(d)≥0）を除外
+  //           'unfilled' → |θ-g|>90°（cos(d)<0）を除外
   let tau = 0;
   for(const p of points){
     const f = midiToHz(p.midi);
@@ -319,10 +332,13 @@ function torqueFromPoints(points, gravAngle, rMax){
     const r = radiusFromFreq(f, rMax, ringParams().step);
     const rn = r / rMax;
     const d = shortestDelta(gravAngle, th); // th - grav
-    if(Math.cos(d) < 0){ // 塗りつぶし外側のみ有効。境界(=0)は無効
-      const m = Math.max(0, Math.min(1, p.vel)); // 質量=強さ
-      tau += m * rn * Math.sin(d);
-    }
+    const c = Math.cos(d);
+    if(Math.abs(c) < 1e-12) continue; // 水面上は無効（境界除外）
+    const inFilled = (c >= 0);
+    if( (excludeMode==='filled'   && inFilled) ||
+        (excludeMode==='unfilled' && !inFilled) ) continue;
+    const m = Math.max(0, Math.min(1, p.vel));
+    tau += m * rn * Math.sin(d);
   }
   return tau;
 }
@@ -338,7 +354,6 @@ function draw(){
 
   ctx.clearRect(0,0,w,h);
 
-  // 入力点
   let points=[];
   if(mode.value==='mic'){
     points = currentMicPeaks.slice();
@@ -347,18 +362,17 @@ function draw(){
   }
   const hasInput = points.length>0;
 
-  // フレーム別処理
   if(frameSel.value==='disk'){
-    const tau = hasInput ? torqueFromPoints(points, gravAngle, rMax) : 0;
+    const tau = hasInput ? torqueFromPoints(points, gravAngle, rMax, excludeMode) : 0;
     const alpha = tau / Math.max(1e-6, diskMass);
     diskOmega += alpha * dt;
-    const k = Math.max(0, Math.min(1, 1 - dampPerSec)); // 減衰
+    const k = Math.max(0, Math.min(1, 1 - dampPerSec));
     diskOmega *= Math.pow(k, dt);
     diskAngle += diskOmega * dt;
     worldRot = diskAngle;
     info.textContent = `disk | τ=${tau.toFixed(3)} α=${alpha.toFixed(3)} ω=${diskOmega.toFixed(3)} rad/s`;
   }else{
-    if(hasInput) toneCenter = estimateTonalityAngle(); // 即時
+    if(hasInput) toneCenter = estimateTonalityAngle();
     worldRot = 0;
     info.textContent = `water`;
   }
@@ -498,7 +512,7 @@ async function startMic(){
 monSlider.oninput = ()=>{ const db=parseFloat(monSlider.value); monVal.textContent=(db<=-60)?'off':`${db} dB`; if(monitorOut) monitorOut.gain.value=(db<=-60)?0:dbToGain(db); };
 gainSlider.oninput = ()=>{ const db=parseFloat(gainSlider.value); gainVal.textContent = `${db>0?'+':''}${db} dB`; if(preGain) preGain.gain.value=dbToGain(db); };
 
-/* ===== Web MIDI In (single or all merge) ===== */
+/* ===== Web MIDI In (single or all merge, default all) ===== */
 let midiAccess=null;
 let attachedInputs = new Set();
 function midiMessageHandler(ev){
@@ -540,6 +554,8 @@ function connectMIDIAccordingToUI(){
       target.onmidimessage = midiMessageHandler;
       attachedInputs.add(target);
       info.textContent=`midi in | ${target.name||target.id}`;
+    }else{
+      info.textContent=`midi in | no device`;
     }
   }
 }
@@ -631,6 +647,7 @@ startBtn.onclick = async ()=>{
   }else if(mode.value==='midiin'){
     ensureCtx(); await setupMIDIInputs();
     devWrap.style.display=''; allWrap.style.display='';
+    midiAll.checked = true; // 初期で全入力
     connectMIDIAccordingToUI();
     startBtn.disabled=true;
   }else{
