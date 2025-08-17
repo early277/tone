@@ -1,0 +1,55 @@
+<!-- UIにステータス行を追加（infoのすぐ後ろでOK） -->
+<span id="midiStat" style="min-width:280px">MIDI: not initialized</span>
+<script>
+const midiStat = document.getElementById('midiStat');
+
+function updateMIDIStat(text){ midiStat.textContent = 'MIDI: ' + text; }
+
+// 1) 安全なコンテキスト検査 + ジェスチャでAudioContext復帰
+if(!isSecureContext){
+  updateMIDIStat('need HTTPS or localhost');
+}
+
+// ユーザー操作で確実にAudioContextをresume（保険）
+['pointerdown','keydown','touchstart'].forEach(ev=>{
+  addEventListener(ev, ()=>{ try{ if(audioCtx && audioCtx.state==='suspended') audioCtx.resume(); }catch{} }, {once:true});
+});
+
+// 2) MIDI初期化を堅牢化
+async function setupMIDIInputs(){
+  // 存在検査
+  if(!('requestMIDIAccess' in navigator)){
+    updateMIDIStat('Web MIDI unsupported. Use a WebMIDI対応ブラウザアプリ');
+    info.textContent = 'WebMIDI not available in this engine';
+    return;
+  }
+  try{
+    // iOS系ブリッジはHTTPS要求が多い。software:trueはソフト音源も許可（無視されても害なし）
+    midiAccess = await navigator.requestMIDIAccess({ sysex:false, software:true });
+    midiAccess.onstatechange = refreshMIDIInputs;
+    refreshMIDIInputs();
+    // 入力一覧を表示
+    const names = Array.from(midiAccess.inputs.values()).map(p=>p.name||p.id);
+    updateMIDIStat(`ready (${names.length} inputs)`);
+  }catch(e){
+    updateMIDIStat('init failed: ' + (e.name||e.message));
+  }
+}
+
+// 入力の並び替え/表示を強化
+function refreshMIDIInputs(){
+  if(!midiAccess){ updateMIDIStat('no access'); return; }
+  midiDev.innerHTML='';
+  const inputs = Array.from(midiAccess.inputs.values());
+  inputs.forEach(input=>{
+    const opt=document.createElement('option');
+    opt.value=input.id; opt.textContent=input.name||input.id;
+    midiDev.appendChild(opt);
+  });
+  updateMIDIStat(`inputs: ${inputs.map(i=>i.name||i.id).join(', ') || 'none'}`);
+  connectMIDIAccordingToUI();
+}
+
+// 3) start時の分岐は既存処理のままでOK（MIDI In選択でsetupMIDIInputsを呼ぶ）
+// 既に: startBtn.onclick -> mode==='midiin' -> ensureCtx(); await setupMIDIInputs();
+</script>
