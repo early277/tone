@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Polar Pitch Map — Tonality(EMA) + Gravity + Frame</title>
+<title>Polar Pitch Map — Disk physics (mass+damping), all MIDI merge</title>
 <style>
   html,body{margin:0;height:100%;background:#111;color:#ddd;font:14px system-ui}
   #ui{position:fixed;top:8px;left:8px;gap:12px;display:flex;flex-wrap:wrap;align-items:center;z-index:2}
@@ -20,6 +20,9 @@
 
   <label id="devWrap" style="display:none;">device
     <select id="midiDev"></select>
+  </label>
+  <label id="allWrap" style="display:none;">All inputs
+    <input id="midiAll" type="checkbox">
   </label>
 
   <label id="fileWrap" style="display:none;">
@@ -62,27 +65,18 @@
   </label>
 
   <label>gravity
-    <input id="grav" type="range" min="0" max="11" step="1" value="0" list="gravTicks">
+    <input id="grav" type="range" min="0" max="11" step="1" value="6" list="gravTicks">
     <datalist id="gravTicks">
       <option value="0"><option value="1"><option value="2"><option value="3"><option value="4"><option value="5">
       <option value="6"><option value="7"><option value="8"><option value="9"><option value="10"><option value="11">
     </datalist>
-    <span id="gravVal">0°</span>
-  </label>
-
-  <!-- tone(EMA) 対数スケール（10^-4〜1） -->
-  <label>tone(EMA)
-    <input id="tone" type="range" min="-4" max="0" step="0.001" value="-0.602" list="toneTicks">
-    <datalist id="toneTicks">
-      <option value="-4"><option value="-3"><option value="-2"><option value="-1"><option value="0">
-    </datalist>
-    <span id="toneVal">α=0.25</span>
+    <span id="gravVal">180°</span>
   </label>
 
   <label>frame
     <select id="frame">
-      <option value="water" selected>water</option>
-      <option value="disk">disk</option>
+      <option value="water">water</option>
+      <option value="disk" selected>disk</option>
     </select>
   </label>
 
@@ -91,13 +85,30 @@
     <span id="orientVal">reverse</span>
   </label>
 
-  <!-- UIパネルの不透明度 10–100% -->
+  <!-- UI不透明度 10–100% -->
   <label>UI opacity
     <input id="uiop" type="range" min="10" max="100" step="1" value="85" list="uiopTicks">
     <datalist id="uiopTicks">
       <option value="10"><option value="25"><option value="50"><option value="75"><option value="100">
     </datalist>
     <span id="uiopVal">85%</span>
+  </label>
+
+  <!-- 物理パラメータ -->
+  <label>disk mass
+    <input id="mass" type="range" min="-2" max="2" step="0.001" value="0" list="massTicks">
+    <datalist id="massTicks">
+      <option value="-2"><option value="-1"><option value="0"><option value="1"><option value="2">
+    </datalist>
+    <span id="massVal">M=1.00</span>
+  </label>
+
+  <label>damping
+    <input id="damp" type="range" min="0" max="100" step="1" value="15" list="dampTicks">
+    <datalist id="dampTicks">
+      <option value="0"><option value="25"><option value="50"><option value="75"><option value="100">
+    </datalist>
+    <span id="dampVal">15%/s</span>
   </label>
 
   <label>detect
@@ -133,6 +144,8 @@ const uiPanel = document.getElementById('ui');
 const mode = document.getElementById('mode');
 const devWrap = document.getElementById('devWrap');
 const midiDev = document.getElementById('midiDev');
+const allWrap = document.getElementById('allWrap');
+const midiAll = document.getElementById('midiAll');
 const fileWrap = document.getElementById('fileWrap');
 const fileInput = document.getElementById('midifile');
 const mfCtrl = document.getElementById('mfCtrl');
@@ -151,8 +164,6 @@ const monVal = document.getElementById('monVal');
 
 const gravSlider = document.getElementById('grav');
 const gravVal = document.getElementById('gravVal');
-const toneSlider = document.getElementById('tone');
-const toneVal = document.getElementById('toneVal');
 const frameSel = document.getElementById('frame');
 
 const orientBtn = document.getElementById('orient');
@@ -160,6 +171,11 @@ const orientVal = document.getElementById('orientVal');
 
 const uiopSlider = document.getElementById('uiop');
 const uiopVal = document.getElementById('uiopVal');
+
+const massSlider = document.getElementById('mass');
+const massVal = document.getElementById('massVal');
+const dampSlider = document.getElementById('damp');
+const dampVal = document.getElementById('dampVal');
 
 const detSlider = document.getElementById('det');
 const detVal = document.getElementById('detVal');
@@ -169,7 +185,9 @@ let maxNotes = parseInt(detSlider.value,10);
 detSlider.oninput = ()=>{ maxNotes = parseInt(detSlider.value,10); detVal.textContent = `${maxNotes}`; };
 mode.onchange = ()=>{
   const m = mode.value;
-  devWrap.style.display = (m==='midiin') ? '' : 'none';
+  const midiin = (m==='midiin');
+  devWrap.style.display = midiin ? '' : 'none';
+  allWrap.style.display = midiin ? '' : 'none';
   fileWrap.style.display = (m==='midifile') ? '' : 'none';
   mfCtrl.style.display  = (m==='midifile') ? 'flex' : 'none';
   const mic = (m==='mic');
@@ -188,41 +206,7 @@ function polarToXY(cx,cy,r,th){ return { x: cx + r*Math.cos(th), y: cy - r*Math.
 function fmtTime(sec){ sec=Math.max(0,sec); const m=Math.floor(sec/60), s=Math.floor(sec%60); return `${m}:${s.toString().padStart(2,'0')}`; }
 function shortestDelta(a,b){ let d=b-a; while(d> Math.PI) d-=2*Math.PI; while(d<=-Math.PI) d+=2*Math.PI; return d; }
 
-/* ===== Tonality state (EMA) ===== */
-let toneCenter = ANG0;               // 半円中心（ワールド座標）
-let gravIdx = 0;                      // 0..11
-let gravAngle = baseAngleFromFifthIndex(gravIdx);
-let toneAlpha = 0.25;                 // α
-let worldRot = 0;                     // 円盤回転（disk時のみ非0）
-function fmtAlpha(a){ return (a<0.001)? a.toExponential(1).replace('+','') : (+a.toFixed(3)).toString(); }
-function updateToneFromSlider(){
-  const loga = parseFloat(toneSlider.value);   // log10(α)
-  toneAlpha = Math.pow(10, loga);              // 1e-4 .. 1
-  toneVal.textContent = `α=${fmtAlpha(toneAlpha)}`;
-}
-updateToneFromSlider();
-toneSlider.oninput = updateToneFromSlider;
-
-gravSlider.oninput = ()=>{ gravIdx = parseInt(gravSlider.value,10); gravAngle = baseAngleFromFifthIndex(gravIdx); gravVal.textContent = `${gravIdx*30}°`; };
-orientVal.textContent = (ORIENT===1?'normal':'reverse');
-orientBtn.onclick = ()=>{ ORIENT*=-1; orientVal.textContent=(ORIENT===1?'normal':'reverse'); gravAngle = baseAngleFromFifthIndex(gravIdx); };
-gravVal.textContent = `${gravIdx*30}°`;
-
-/* UI不透明度適用 */
-function applyUIOpacity(){
-  const a = Math.max(0.1, Math.min(1, parseInt(uiopSlider.value,10)/100));
-  uiPanel.style.opacity = a;
-  uiopVal.textContent = `${Math.round(a*100)}%`;
-}
-applyUIOpacity();
-uiopSlider.oninput = applyUIOpacity;
-
-/* ===== Draw state ===== */
-const activeNotes = new Map();   // midi -> vel(0..1)
-let lastMicPCWeights = new Float32Array(12); // Mic PC重み（五度順）
-let currentMicPeaks = [];        // [{midi, vel}] 残像なし
-
-/* ===== Tonality estimator ===== */
+/* ===== Tonality (water frame only, no EMA) ===== */
 function estimateTonalityAngle(){
   const w = new Float32Array(12);
   if(mode.value==='mic'){
@@ -242,12 +226,44 @@ function estimateTonalityAngle(){
       const d = Math.abs(shortestDelta(ac, ai));
       if(d <= Math.PI/2 + 1e-6) s += w[i];
     }
-    const dg = Math.abs(shortestDelta(ac, gravAngle));
-    s += 0.0005 * Math.cos(dg);
     if(s>bestS){ bestS=s; bestC=c; }
   }
   return baseAngleFromFifthIndex(bestC);
 }
+
+/* ===== State ===== */
+let toneCenter = ANG0;               // waterモード用。毎フレーム即時更新
+let gravIdx = 6;                     // 初期=下向き
+let gravAngle = baseAngleFromFifthIndex(gravIdx);
+let worldRot = 0;                    // 円盤回転角（描画に加算）
+
+// 物理 (disk)
+let diskAngle = 0;                   // 角度
+let diskOmega = 0;                   // 角速度 [rad/s]
+let diskMass = 1.0;                  // 慣性（Iスケール）
+let dampPerSec = 0.15;               // 0..1
+
+gravSlider.oninput = ()=>{ gravIdx = parseInt(gravSlider.value,10); gravAngle = baseAngleFromFifthIndex(gravIdx); gravVal.textContent = `${gravIdx*30}°`; };
+orientVal.textContent = (ORIENT===1?'normal':'reverse');
+orientBtn.onclick = ()=>{ ORIENT*=-1; orientVal.textContent=(ORIENT===1?'normal':'reverse'); gravAngle = baseAngleFromFifthIndex(gravIdx); };
+
+function applyUIOpacity(){
+  const a = Math.max(0.1, Math.min(1, parseInt(uiopSlider.value,10)/100));
+  uiPanel.style.opacity = a;
+  uiopVal.textContent = `${Math.round(a*100)}%`;
+}
+applyUIOpacity(); uiopSlider.oninput = applyUIOpacity;
+
+function updateMass(){ const lg = parseFloat(massSlider.value); diskMass = Math.pow(10, lg); massVal.textContent = `M=${diskMass.toFixed(2)}`; }
+updateMass(); massSlider.oninput = updateMass;
+
+function updateDamp(){ const p = parseInt(dampSlider.value,10); dampPerSec = p/100; dampVal.textContent = `${p}%/s`; }
+updateDamp(); dampSlider.oninput = updateDamp;
+
+/* ===== Draw state ===== */
+const activeNotes = new Map();                  // midi -> vel(0..1)
+let lastMicPCWeights = new Float32Array(12);    // Mic PC重み（五度順）
+let currentMicPeaks = [];                       // [{midi, vel}] 残像なし
 
 /* ===== 描画（点・結線・LOW/HIGH） ===== */
 function drawNotes(points){
@@ -292,14 +308,37 @@ function drawNotes(points){
   }
 }
 
+/* ===== Physics torque from points (disk) ===== */
+function torqueFromPoints(points, gravAngle, rMax){
+  // τ = Σ m_i * r_norm * sin(θ_i - g)
+  // 影響しない範囲：塗りつぶし半円（|θ-g|≤90° ≡ cos(d)≥0）→除外
+  let tau = 0;
+  for(const p of points){
+    const f = midiToHz(p.midi);
+    const th = mapAngleByFifths(p.midi);
+    const r = radiusFromFreq(f, rMax, ringParams().step);
+    const rn = r / rMax;
+    const d = shortestDelta(gravAngle, th); // th - grav
+    if(Math.cos(d) < 0){ // 塗りつぶし外側のみ有効。境界(=0)は無効
+      const m = Math.max(0, Math.min(1, p.vel)); // 質量=強さ
+      tau += m * rn * Math.sin(d);
+    }
+  }
+  return tau;
+}
+
 /* ===== Draw loop ===== */
+let prevT=null;
 function draw(){
   const w=cv.width, h=cv.height, cx=w/2, cy=h/2;
   const {rMax, step} = ringParams();
+  const now = performance.now()/1000;
+  const dt = prevT? Math.max(1/240, Math.min(0.25, now-prevT)) : 1/60;
+  prevT = now;
 
   ctx.clearRect(0,0,w,h);
 
-  // 入力
+  // 入力点
   let points=[];
   if(mode.value==='mic'){
     points = currentMicPeaks.slice();
@@ -308,22 +347,27 @@ function draw(){
   }
   const hasInput = points.length>0;
 
-  if(hasInput){
-    const target = estimateTonalityAngle();
-    toneCenter += shortestDelta(toneCenter, target) * toneAlpha;
-  }
-
+  // フレーム別処理
   if(frameSel.value==='disk'){
-    worldRot = gravAngle - toneCenter;
+    const tau = hasInput ? torqueFromPoints(points, gravAngle, rMax) : 0;
+    const alpha = tau / Math.max(1e-6, diskMass);
+    diskOmega += alpha * dt;
+    const k = Math.max(0, Math.min(1, 1 - dampPerSec)); // 減衰
+    diskOmega *= Math.pow(k, dt);
+    diskAngle += diskOmega * dt;
+    worldRot = diskAngle;
+    info.textContent = `disk | τ=${tau.toFixed(3)} α=${alpha.toFixed(3)} ω=${diskOmega.toFixed(3)} rad/s`;
   }else{
+    if(hasInput) toneCenter = estimateTonalityAngle(); // 即時
     worldRot = 0;
+    info.textContent = `water`;
   }
 
   // 放射線（worldRot 符号反転）
   ctx.save(); ctx.translate(cx,cy);
   ctx.strokeStyle='rgba(255,255,255,0.10)'; ctx.lineWidth=1;
-  for(let k=0;k<12;k++){
-    const ang = baseAngleFromFifthIndex(k) - worldRot;
+  for(let k2=0;k2<12;k2++){
+    const ang = baseAngleFromFifthIndex(k2) - worldRot;
     ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo((rMax+6)*Math.cos(ang),(rMax+6)*Math.sin(ang)); ctx.stroke();
   }
   ctx.restore();
@@ -332,16 +376,16 @@ function draw(){
   ctx.strokeStyle='rgba(255,255,255,0.14)';
   for(let i=0;i<=OCTAVES;i++){ const r=rMax - i*step; ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI); ctx.stroke(); }
 
-  // ラベル
+  // ラベル（worldRot 加算）
   ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.font = `${12*devicePixelRatio}px system-ui`;
-  for(let k=0;k<12;k++){
-    const ang = baseAngleFromFifthIndex(k) + worldRot;
+  for(let k2=0;k2<12;k2++){
+    const ang = baseAngleFromFifthIndex(k2) + worldRot;
     const tx = cx + (rMax+18)*Math.cos(ang), ty = cy - (rMax+18)*Math.sin(ang);
-    ctx.fillText(FIFTH_LABELS[k], tx, ty);
+    ctx.fillText(FIFTH_LABELS[k2], tx, ty);
   }
 
-  // 調性半円（水面）：water時は符号反転
+  // 調性半円（disk:重力方向固定 / water:反転表示）
   const halfCenter = (frameSel.value==='disk') ? gravAngle : (2*ANG0 - toneCenter);
   ctx.save(); ctx.translate(cx,cy);
   ctx.beginPath(); ctx.moveTo(0,0);
@@ -454,24 +498,53 @@ async function startMic(){
 monSlider.oninput = ()=>{ const db=parseFloat(monSlider.value); monVal.textContent=(db<=-60)?'off':`${db} dB`; if(monitorOut) monitorOut.gain.value=(db<=-60)?0:dbToGain(db); };
 gainSlider.oninput = ()=>{ const db=parseFloat(gainSlider.value); gainVal.textContent = `${db>0?'+':''}${db} dB`; if(preGain) preGain.gain.value=dbToGain(db); };
 
-/* ===== Web MIDI In ===== */
-let midiAccess=null, midiInput=null;
+/* ===== Web MIDI In (single or all merge) ===== */
+let midiAccess=null;
+let attachedInputs = new Set();
+function midiMessageHandler(ev){
+  const [st,d1,d2]=ev.data, cmd=st&0xf0;
+  if(cmd===0x90){ const note=d1, vel=d2; if(vel>0){ activeNotes.set(note, vel/127); if(!synth) synth=new PolySynth(ensureCtx()); synth.noteOn(note, vel/127); } else { activeNotes.delete(note); if(synth) synth.noteOff(note); } }
+  else if(cmd===0x80){ const note=d1; activeNotes.delete(note); if(synth) synth.noteOff(note); }
+}
 async function setupMIDIInputs(){
   midiAccess=await navigator.requestMIDIAccess();
-  midiDev.innerHTML=''; for(const input of midiAccess.inputs.values()){ const opt=document.createElement('option'); opt.value=input.id; opt.textContent=input.name||input.id; midiDev.appendChild(opt); }
+  midiAccess.onstatechange = refreshMIDIInputs;
+  refreshMIDIInputs();
 }
-function connectSelectedMIDI(){
-  if(!synth) synth=new PolySynth(ensureCtx());
-  if(midiInput) midiInput.onmidimessage=null;
-  const id=midiDev.value; for(const input of midiAccess.inputs.values()){ if(input.id===id){ midiInput=input; break; } }
-  if(!midiInput) return;
-  midiInput.onmidimessage=(ev)=>{
-    const [st,d1,d2]=ev.data, cmd=st&0xf0;
-    if(cmd===0x90){ const note=d1, vel=d2; if(vel>0){ activeNotes.set(note, vel/127); synth.noteOn(note, vel/127); } else { activeNotes.delete(note); synth.noteOff(note); } }
-    else if(cmd===0x80){ const note=d1; activeNotes.delete(note); synth.noteOff(note); }
-  };
-  info.textContent=`midi in | ${midiInput.name}`;
+function refreshMIDIInputs(){
+  midiDev.innerHTML='';
+  for(const input of midiAccess.inputs.values()){
+    const opt=document.createElement('option'); opt.value=input.id; opt.textContent=input.name||input.id; midiDev.appendChild(opt);
+  }
+  connectMIDIAccordingToUI();
 }
+function detachAllInputs(){
+  for(const inp of attachedInputs){ inp.onmidimessage=null; }
+  attachedInputs.clear();
+}
+function connectMIDIAccordingToUI(){
+  if(!midiAccess) return;
+  detachAllInputs();
+  if(midiAll.checked){
+    let n=0;
+    for(const input of midiAccess.inputs.values()){
+      input.onmidimessage = midiMessageHandler;
+      attachedInputs.add(input);
+      n++;
+    }
+    info.textContent=`midi in | all inputs (${n})`;
+  }else{
+    let target=null, id=midiDev.value;
+    for(const input of midiAccess.inputs.values()){ if(input.id===id){ target=input; break; } }
+    if(target){
+      target.onmidimessage = midiMessageHandler;
+      attachedInputs.add(target);
+      info.textContent=`midi in | ${target.name||target.id}`;
+    }
+  }
+}
+midiDev.onchange = connectMIDIAccordingToUI;
+midiAll.onchange = connectMIDIAccordingToUI;
 
 /* ===== MIDI File (SMF) ===== */
 let fileEvents=[], fileLoaded=false, fileDuration=0;
@@ -556,7 +629,10 @@ startBtn.onclick = async ()=>{
   if(mode.value==='mic'){
     await startMic(); startBtn.disabled=true;
   }else if(mode.value==='midiin'){
-    ensureCtx(); await setupMIDIInputs(); devWrap.style.display=''; connectSelectedMIDI(); midiDev.onchange=connectSelectedMIDI; startBtn.disabled=true;
+    ensureCtx(); await setupMIDIInputs();
+    devWrap.style.display=''; allWrap.style.display='';
+    connectMIDIAccordingToUI();
+    startBtn.disabled=true;
   }else{
     ensureCtx(); fileWrap.style.display=''; mfCtrl.style.display='flex';
     fileInput.onchange = async ()=>{ const f=fileInput.files[0]; if(!f) return; const buf=await f.arrayBuffer(); try{ loadSMF(buf); }catch(e){ info.textContent='parse error: '+e; } };
