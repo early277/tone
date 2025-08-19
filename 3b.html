@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Polar Pitch Map — Disk physics (mass+damping), selectable torque scope, all MIDI merge</title>
+<title>Polar Pitch Map — Disk physics, selectable torque scope, iPad WebMIDI</title>
 <style>
   html,body{margin:0;height:100%;background:#111;color:#ddd;font:14px system-ui}
   #ui{position:fixed;top:8px;left:8px;gap:12px;display:flex;flex-wrap:wrap;align-items:center;z-index:2}
@@ -9,6 +9,7 @@
   input[type=range]{width:180px}
   button,select{padding:6px 10px}
 </style>
+
 <div id="ui">
   <label>mode
     <select id="mode">
@@ -18,10 +19,10 @@
     </select>
   </label>
 
-  <label id="devWrap" style="display:none;">device
+  <label id="devWrap" style="display:;">device
     <select id="midiDev"></select>
   </label>
-  <label id="allWrap" style="display:none;">All inputs
+  <label id="allWrap" style="display:;">All inputs
     <input id="midiAll" type="checkbox" checked>
   </label>
 
@@ -65,12 +66,12 @@
   </label>
 
   <label>gravity
-    <input id="grav" type="range" min="0" max="11" step="1" value="6" list="gravTicks">
+    <input id="grav" type="range" min="0" max="11" step="1" value="0" list="gravTicks">
     <datalist id="gravTicks">
       <option value="0"><option value="1"><option value="2"><option value="3"><option value="4"><option value="5">
       <option value="6"><option value="7"><option value="8"><option value="9"><option value="10"><option value="11">
     </datalist>
-    <span id="gravVal">180°</span>
+    <span id="gravVal">0°</span>
   </label>
 
   <label>frame
@@ -82,18 +83,16 @@
 
   <label>orient
     <button id="orient">reverse</button>
-    <span id="orientVal">reverse</span>
+    <span id="orientVal">normal</span>
   </label>
 
-  <!-- トルク無効領域の選択 -->
   <label>トルク無効領域
     <select id="exclude">
-      <option value="filled" selected>塗りつぶし</option>
-      <option value="unfilled">非塗りつぶし</option>
+      <option value="filled">塗りつぶし</option>
+      <option value="unfilled" selected>非塗りつぶし</option>
     </select>
   </label>
 
-  <!-- UI不透明度 10–100% -->
   <label>UI opacity
     <input id="uiop" type="range" min="10" max="100" step="1" value="85" list="uiopTicks">
     <datalist id="uiopTicks">
@@ -102,21 +101,20 @@
     <span id="uiopVal">85%</span>
   </label>
 
-  <!-- 物理パラメータ -->
   <label>disk mass
-    <input id="mass" type="range" min="-2" max="2" step="0.001" value="0" list="massTicks">
+    <input id="mass" type="range" min="-2" max="2" step="0.001" value="-0.431" list="massTicks">
     <datalist id="massTicks">
       <option value="-2"><option value="-1"><option value="0"><option value="1"><option value="2">
     </datalist>
-    <span id="massVal">M=1.00</span>
+    <span id="massVal">M=0.37</span>
   </label>
 
   <label>damping
-    <input id="damp" type="range" min="0" max="100" step="1" value="15" list="dampTicks">
+    <input id="damp" type="range" min="1" max="99" step="1" value="95" list="dampTicks">
     <datalist id="dampTicks">
-      <option value="0"><option value="25"><option value="50"><option value="75"><option value="100">
+      <option value="1"><option value="25"><option value="50"><option value="75"><option value="99">
     </datalist>
-    <span id="dampVal">15%/s</span>
+    <span id="dampVal">95%/s</span>
   </label>
 
   <label>detect
@@ -128,8 +126,12 @@
   </label>
 
   <span id="info">idle</span>
+  <span id="midiStat" style="min-width:280px">MIDI: not initialized</span>
+  <span id="midiLast">last: –</span>
 </div>
+
 <canvas id="cv"></canvas>
+
 <script>
 /* ===== Canvas ===== */
 const cv = document.getElementById('cv');
@@ -191,6 +193,10 @@ const detSlider = document.getElementById('det');
 const detVal = document.getElementById('detVal');
 const info = document.getElementById('info');
 
+const midiStat = document.getElementById('midiStat');
+const midiLast = document.getElementById('midiLast');
+
+/* ===== UI state ===== */
 let maxNotes = parseInt(detSlider.value,10);
 detSlider.oninput = ()=>{ maxNotes = parseInt(detSlider.value,10); detVal.textContent = `${maxNotes}`; };
 mode.onchange = ()=>{
@@ -202,7 +208,6 @@ mode.onchange = ()=>{
   mfCtrl.style.display  = (m==='midifile') ? 'flex' : 'none';
   const mic = (m==='mic');
   gainSlider.disabled = !mic; detSlider.disabled = !mic; monSlider.disabled = !mic;
-  // MIDI Inに切り替え時は自動で全入力を有効
   if(midiin){ midiAll.checked = true; connectMIDIAccordingToUI(); }
 };
 
@@ -210,15 +215,17 @@ mode.onchange = ()=>{
 function dbToGain(db){ return Math.pow(10, db/20); }
 function midiToHz(m){ return 440*Math.pow(2,(m-69)/12); }
 function ringParams(){ const rMax = Math.min(cv.width,cv.height)/2 - MARGIN; const step = rMax / OCTAVES; return {rMax, step}; }
-let ORIENT = -1; // +1:normal, -1:reverse
+let ORIENT = +1; // +1:normal, -1:reverse
 function baseAngleFromFifthIndex(i){ return ANG0 + ORIENT * 2*Math.PI*(i%12)/12; }
 function mapAngleByFifths(midi){ const pc=((midi%12)+12)%12; const idx=FIFTH_INDEX[pc]; return baseAngleFromFifthIndex(idx) + worldRot; }
 function radiusFromFreq(f, rMax, step){ const oc = Math.max(0, Math.min(OCTAVES, Math.log2(f/F_LOW))); return rMax - step*oc; }
 function polarToXY(cx,cy,r,th){ return { x: cx + r*Math.cos(th), y: cy - r*Math.sin(th) }; }
 function fmtTime(sec){ sec=Math.max(0,sec); const m=Math.floor(sec/60), s=Math.floor(sec%60); return `${m}:${s.toString().padStart(2,'0')}`; }
 function shortestDelta(a,b){ let d=b-a; while(d> Math.PI) d-=2*Math.PI; while(d<=-Math.PI) d+=2*Math.PI; return d; }
+function hex(n){ return n.toString(16).padStart(2,'0'); }
+function updateMIDIStat(t){ midiStat.textContent = 'MIDI: ' + t; }
 
-/* ===== Tonality (water frame only, no EMA) ===== */
+/* ===== Tonality estimator (water, no EMA) ===== */
 function estimateTonalityAngle(){
   const w = new Float32Array(12);
   if(mode.value==='mic'){
@@ -243,44 +250,37 @@ function estimateTonalityAngle(){
   return baseAngleFromFifthIndex(bestC);
 }
 
-/* ===== State ===== */
-let toneCenter = ANG0;               // waterモード用
-let gravIdx = 6;                     // 初期=下向き
+/* ===== Global state ===== */
+let toneCenter = ANG0;
+let gravIdx = 0;
 let gravAngle = baseAngleFromFifthIndex(gravIdx);
-let worldRot = 0;                    // 円盤回転角（描画に加算）
+let worldRot = 0;
 
-// 物理 (disk)
+// disk physics
 let diskAngle = 0;
-let diskOmega = 0;                   // [rad/s]
-let diskMass = 1.0;
-let dampPerSec = 0.15;               // 0..1
-let excludeMode = excludeSel.value;  // 'filled' or 'unfilled'
+let diskOmega = 0;     // rad/s
+let diskMass = Math.pow(10, parseFloat(massSlider.value)); // ≈0.37
+let dampPerSec = parseInt(dampSlider.value,10)/100;        // 0.95
+let excludeMode = excludeSel.value; // 'unfilled'
 
 gravSlider.oninput = ()=>{ gravIdx = parseInt(gravSlider.value,10); gravAngle = baseAngleFromFifthIndex(gravIdx); gravVal.textContent = `${gravIdx*30}°`; };
 orientVal.textContent = (ORIENT===1?'normal':'reverse');
 orientBtn.onclick = ()=>{ ORIENT*=-1; orientVal.textContent=(ORIENT===1?'normal':'reverse'); gravAngle = baseAngleFromFifthIndex(gravIdx); };
-
 excludeSel.onchange = ()=>{ excludeMode = excludeSel.value; };
 
-function applyUIOpacity(){
-  const a = Math.max(0.1, Math.min(1, parseInt(uiopSlider.value,10)/100));
-  uiPanel.style.opacity = a;
-  uiopVal.textContent = `${Math.round(a*100)}%`;
-}
+function applyUIOpacity(){ const a=Math.max(0.1, Math.min(1, parseInt(uiopSlider.value,10)/100)); uiPanel.style.opacity=a; uiopVal.textContent=`${Math.round(a*100)}%`; }
 applyUIOpacity(); uiopSlider.oninput = applyUIOpacity;
-
-function updateMass(){ const lg = parseFloat(massSlider.value); diskMass = Math.pow(10, lg); massVal.textContent = `M=${diskMass.toFixed(2)}`; }
+function updateMass(){ const lg=parseFloat(massSlider.value); diskMass=Math.pow(10,lg); massVal.textContent=`M=${diskMass.toFixed(2)}`; }
 updateMass(); massSlider.oninput = updateMass;
-
-function updateDamp(){ const p = parseInt(dampSlider.value,10); dampPerSec = p/100; dampVal.textContent = `${p}%/s`; }
+function updateDamp(){ const p=parseInt(dampSlider.value,10); dampPerSec=p/100; dampVal.textContent=`${p}%/s`; }
 updateDamp(); dampSlider.oninput = updateDamp;
 
-/* ===== Draw state ===== */
-const activeNotes = new Map();
-let lastMicPCWeights = new Float32Array(12);
-let currentMicPeaks = [];
+/* ===== Note state ===== */
+const activeNotes = new Map();               // midi -> vel(0..1)
+let lastMicPCWeights = new Float32Array(12); // mic PC weights
+let currentMicPeaks = [];                    // [{midi, vel}]
 
-/* ===== 描画（点・結線・LOW/HIGH） ===== */
+/* ===== Drawing: notes, lines, LOW/HIGH ===== */
 function drawNotes(points){
   if(!points.length) return;
   const {rMax, step}=ringParams(); const cx=cv.width/2, cy=cv.height/2;
@@ -320,20 +320,17 @@ function drawNotes(points){
   }
 }
 
-/* ===== Physics torque from points (disk) ===== */
+/* ===== Disk torque from points ===== */
 function torqueFromPoints(points, gravAngle, rMax, excludeMode){
-  // τ = Σ m_i * r_norm * sin(θ_i - g)
-  // 無効領域: 'filled' → |θ-g|≤90°（cos(d)≥0）を除外
-  //           'unfilled' → |θ-g|>90°（cos(d)<0）を除外
   let tau = 0;
   for(const p of points){
     const f = midiToHz(p.midi);
     const th = mapAngleByFifths(p.midi);
     const r = radiusFromFreq(f, rMax, ringParams().step);
     const rn = r / rMax;
-    const d = shortestDelta(gravAngle, th); // th - grav
+    const d = shortestDelta(gravAngle, th);
     const c = Math.cos(d);
-    if(Math.abs(c) < 1e-12) continue; // 水面上は無効（境界除外）
+    if(Math.abs(c) < 1e-12) continue; // 水面は無効
     const inFilled = (c >= 0);
     if( (excludeMode==='filled'   && inFilled) ||
         (excludeMode==='unfilled' && !inFilled) ) continue;
@@ -343,7 +340,7 @@ function torqueFromPoints(points, gravAngle, rMax, excludeMode){
   return tau;
 }
 
-/* ===== Draw loop ===== */
+/* ===== Main draw loop ===== */
 let prevT=null;
 function draw(){
   const w=cv.width, h=cv.height, cx=w/2, cy=h/2;
@@ -355,11 +352,9 @@ function draw(){
   ctx.clearRect(0,0,w,h);
 
   let points=[];
-  if(mode.value==='mic'){
-    points = currentMicPeaks.slice();
-  }else{
-    for(const [m, vel] of activeNotes) points.push({midi:m, vel});
-  }
+  if(mode.value==='mic') points = currentMicPeaks.slice();
+  else for(const [m, vel] of activeNotes) points.push({midi:m, vel});
+
   const hasInput = points.length>0;
 
   if(frameSel.value==='disk'){
@@ -399,7 +394,7 @@ function draw(){
     ctx.fillText(FIFTH_LABELS[k2], tx, ty);
   }
 
-  // 調性半円（disk:重力方向固定 / water:反転表示）
+  // 調性半円（disk:重力方向固定 / water:反転）
   const halfCenter = (frameSel.value==='disk') ? gravAngle : (2*ANG0 - toneCenter);
   ctx.save(); ctx.translate(cx,cy);
   ctx.beginPath(); ctx.moveTo(0,0);
@@ -512,55 +507,88 @@ async function startMic(){
 monSlider.oninput = ()=>{ const db=parseFloat(monSlider.value); monVal.textContent=(db<=-60)?'off':`${db} dB`; if(monitorOut) monitorOut.gain.value=(db<=-60)?0:dbToGain(db); };
 gainSlider.oninput = ()=>{ const db=parseFloat(gainSlider.value); gainVal.textContent = `${db>0?'+':''}${db} dB`; if(preGain) preGain.gain.value=dbToGain(db); };
 
-/* ===== Web MIDI In (single or all merge, default all) ===== */
+/* ===== Web MIDI In (iPad対応: open()+両方式ハンドラ) ===== */
 let midiAccess=null;
-let attachedInputs = new Set();
+const attachedInputs = new Set();
+
+function logMidi(ev){
+  const d = Array.from(ev.data||[]).map(hex).join(' ');
+  const name = ev.currentTarget && (ev.currentTarget.name||ev.currentTarget.id||'input');
+  midiLast.textContent = `last: ${name}  ${d}`;
+}
 function midiMessageHandler(ev){
-  const [st,d1,d2]=ev.data, cmd=st&0xf0;
-  if(cmd===0x90){ const note=d1, vel=d2; if(vel>0){ activeNotes.set(note, vel/127); if(!synth) synth=new PolySynth(ensureCtx()); synth.noteOn(note, vel/127); } else { activeNotes.delete(note); if(synth) synth.noteOff(note); } }
-  else if(cmd===0x80){ const note=d1; activeNotes.delete(note); if(synth) synth.noteOff(note); }
+  logMidi(ev);
+  const d=ev.data;
+  if(!d || d.length<3) return;
+  const st=d[0]&0xf0, note=d[1], vel=d[2];
+  if(st===0x90){
+    if(vel>0){ activeNotes.set(note, vel/127); if(!synth) synth=new PolySynth(ensureCtx()); synth.noteOn(note, vel/127); }
+    else{ activeNotes.delete(note); if(synth) synth.noteOff(note); }
+  }else if(st===0x80){
+    activeNotes.delete(note); if(synth) synth.noteOff(note);
+  }
 }
 async function setupMIDIInputs(){
-  midiAccess=await navigator.requestMIDIAccess();
-  midiAccess.onstatechange = refreshMIDIInputs;
-  refreshMIDIInputs();
-}
-function refreshMIDIInputs(){
-  midiDev.innerHTML='';
-  for(const input of midiAccess.inputs.values()){
-    const opt=document.createElement('option'); opt.value=input.id; opt.textContent=input.name||input.id; midiDev.appendChild(opt);
+  if(!isSecureContext){ updateMIDIStat('need HTTPS/localhost'); return; }
+  if(!('requestMIDIAccess' in navigator)){ updateMIDIStat('unsupported'); return; }
+  try{
+    midiAccess = await navigator.requestMIDIAccess({sysex:false, software:true});
+    midiAccess.onstatechange = refreshMIDIInputs;
+    await refreshMIDIInputs();
+    updateMIDIStat(`ready (${midiAccess.inputs.size} inputs)`);
+  }catch(e){
+    updateMIDIStat('init failed: ' + (e.name||e.message));
   }
-  connectMIDIAccordingToUI();
+}
+async function refreshMIDIInputs(){
+  if(!midiAccess) return;
+  midiDev.innerHTML='';
+  const inputs = Array.from(midiAccess.inputs.values());
+  for(const inp of inputs){
+    const opt=document.createElement('option'); opt.value=inp.id; opt.textContent=inp.name||inp.id; midiDev.appendChild(opt);
+  }
+  await connectMIDIAccordingToUI();
 }
 function detachAllInputs(){
-  for(const inp of attachedInputs){ inp.onmidimessage=null; }
+  for(const inp of attachedInputs){
+    try{ inp.onmidimessage=null; if(inp.removeEventListener) inp.removeEventListener('midimessage', midiMessageHandler); }catch{}
+  }
   attachedInputs.clear();
 }
-function connectMIDIAccordingToUI(){
+async function attachInput(inp){
+  try{ await inp.open(); }catch{}
+  inp.onmidimessage = midiMessageHandler;
+  if(inp.addEventListener) inp.addEventListener('midimessage', midiMessageHandler);
+  attachedInputs.add(inp);
+}
+async function connectMIDIAccordingToUI(){
   if(!midiAccess) return;
   detachAllInputs();
-  if(midiAll.checked){
-    let n=0;
-    for(const input of midiAccess.inputs.values()){
-      input.onmidimessage = midiMessageHandler;
-      attachedInputs.add(input);
-      n++;
-    }
-    info.textContent=`midi in | all inputs (${n})`;
+  const inputs = Array.from(midiAccess.inputs.values());
+  if(midiAll.checked || !midiDev.value){
+    for(const inp of inputs) await attachInput(inp);
+    updateMIDIStat(`all inputs (${inputs.length})`);
   }else{
-    let target=null, id=midiDev.value;
-    for(const input of midiAccess.inputs.values()){ if(input.id===id){ target=input; break; } }
-    if(target){
-      target.onmidimessage = midiMessageHandler;
-      attachedInputs.add(target);
-      info.textContent=`midi in | ${target.name||target.id}`;
-    }else{
-      info.textContent=`midi in | no device`;
-    }
+    const target = midiAccess.inputs.get(midiDev.value);
+    if(target){ await attachInput(target); updateMIDIStat(`input: ${target.name||target.id}`); }
+    else{ updateMIDIStat('no device'); }
   }
 }
-midiDev.onchange = connectMIDIAccordingToUI;
-midiAll.onchange = connectMIDIAccordingToUI;
+midiDev.onchange = ()=>connectMIDIAccordingToUI();
+midiAll.onchange = ()=>connectMIDIAccordingToUI();
+
+// 自動初期化（MIDI In選択時）
+document.addEventListener('DOMContentLoaded', ()=>{
+  if(mode.value==='midiin') setupMIDIInputs().then(connectMIDIAccordingToUI);
+});
+mode.addEventListener('change', ()=>{
+  if(mode.value==='midiin') setupMIDIInputs().then(connectMIDIAccordingToUI);
+});
+
+// iOS: ユーザー操作でAudioContextを復帰（保険）
+['pointerdown','keydown','touchstart'].forEach(ev=>{
+  addEventListener(ev, ()=>{ try{ if(audioCtx && audioCtx.state==='suspended') audioCtx.resume(); }catch{} }, {once:true});
+});
 
 /* ===== MIDI File (SMF) ===== */
 let fileEvents=[], fileLoaded=false, fileDuration=0;
@@ -645,11 +673,8 @@ startBtn.onclick = async ()=>{
   if(mode.value==='mic'){
     await startMic(); startBtn.disabled=true;
   }else if(mode.value==='midiin'){
-    ensureCtx(); await setupMIDIInputs();
-    devWrap.style.display=''; allWrap.style.display='';
-    midiAll.checked = true; // 初期で全入力
-    connectMIDIAccordingToUI();
-    startBtn.disabled=true;
+    ensureCtx(); await setupMIDIInputs(); devWrap.style.display=''; allWrap.style.display='';
+    midiAll.checked = true; connectMIDIAccordingToUI(); startBtn.disabled=true;
   }else{
     ensureCtx(); fileWrap.style.display=''; mfCtrl.style.display='flex';
     fileInput.onchange = async ()=>{ const f=fileInput.files[0]; if(!f) return; const buf=await f.arrayBuffer(); try{ loadSMF(buf); }catch(e){ info.textContent='parse error: '+e; } };
@@ -671,49 +696,3 @@ speedSlider.oninput = ()=>{
   speed=newRate; speedVal.textContent=`${Math.round(speed*100)}%`;
 };
 </script>
-
-<!-- info行の近くにステータス出力を1行追加 -->
-<span id="midiStat" style="min-width:280px">MIDI: not initialized</span>
-<script>
-const midiStat = document.getElementById('midiStat');
-function updateMIDIStat(t){ midiStat.textContent = 'MIDI: ' + t; }
-
-// 既存setupMIDIInputsを流用して、自動初期化を追加
-async function tryAutoInitMIDI(){
-  if(!isSecureContext){ updateMIDIStat('need HTTPS/localhost'); return; }
-  if(!('requestMIDIAccess' in navigator)){
-    updateMIDIStat('unsupported'); return;
-  }
-  try{
-    await setupMIDIInputs();
-    if(typeof midiAll!=='undefined'){ midiAll.checked = true; }
-    connectMIDIAccordingToUI();
-    // 入力名を表示
-    const names = Array.from(midiAccess.inputs.values()).map(p=>p.name||p.id);
-    updateMIDIStat(`ready (${names.length})`);
-  }catch(e){
-    updateMIDIStat('init failed: ' + (e.name||e.message));
-  }
-}
-
-// ページ読み込み時とmode切替時に自動初期化
-document.addEventListener('DOMContentLoaded', ()=>{
-  if(mode && mode.value==='midiin') tryAutoInitMIDI();
-});
-mode.addEventListener('change', ()=>{
-  if(mode.value==='midiin') tryAutoInitMIDI();
-});
-
-// 入出力の増減に追従（iPadで接続順がシビアな場合の保険）
-let rescanTimer=null;
-function scheduleMIDIRescan(){
-  if(rescanTimer) return;
-  let left=5;
-  rescanTimer = setInterval(()=>{
-    if(!midiAccess){ clearInterval(rescanTimer); rescanTimer=null; return; }
-    refreshMIDIInputs();
-    if(--left<=0){ clearInterval(rescanTimer); rescanTimer=null; }
-  }, 2000);
-}
-</script>
-
