@@ -94,35 +94,44 @@
   </label>
 
   <label>UI opacity
-    <input id="uiop" type="range" min="10" max="100" step="1" value="85" list="uiopTicks">
-    <datalist id="uiopTicks">
-      <option value="10"><option value="25"><option value="50"><option value="75"><option value="100">
-    </datalist>
+    <input id="uiop" type="range" min="10" max="100" step="1" value="85">
     <span id="uiopVal">85%</span>
   </label>
 
   <label>disk mass
-    <input id="mass" type="range" min="-2" max="2" step="0.001" value="-0.431" list="massTicks">
-    <datalist id="massTicks">
-      <option value="-2"><option value="-1"><option value="0"><option value="1"><option value="2">
-    </datalist>
+    <input id="mass" type="range" min="-2" max="2" step="0.001" value="-0.431">
     <span id="massVal">M=0.37</span>
   </label>
 
   <label>damping
-    <input id="damp" type="range" min="1" max="99" step="1" value="95" list="dampTicks">
-    <datalist id="dampTicks">
-      <option value="1"><option value="25"><option value="50"><option value="75"><option value="99">
-    </datalist>
-    <span id="dampVal">95%/s</span>
+    <input id="damp" type="range" min="1" max="99" step="1" value="99">
+    <span id="dampVal">99%/s</span>
   </label>
 
   <label>detect
-    <input id="det" type="range" min="1" max="16" step="1" value="4" list="detTicks">
-    <datalist id="detTicks">
-      <option value="1"><option value="4"><option value="8"><option value="12"><option value="16">
-    </datalist>
+    <input id="det" type="range" min="1" max="16" step="1" value="4">
     <span id="detVal">4</span>
+  </label>
+
+  <!-- 追加コントロール -->
+  <label>line α
+    <input id="lineA" type="range" min="0" max="100" step="1" value="50">
+    <span id="lineAVal">50%</span>
+  </label>
+
+  <label>water α
+    <input id="waterA" type="range" min="0" max="100" step="1" value="12">
+    <span id="waterAVal">12%</span>
+  </label>
+
+  <label>label size
+    <input id="labelSize" type="range" min="8" max="36" step="1" value="12">
+    <span id="labelSizeVal">12px</span>
+  </label>
+
+  <label>label bg α
+    <input id="labelBG" type="range" min="0" max="100" step="1" value="60">
+    <span id="labelBGVal">60%</span>
   </label>
 
   <span id="info">idle</span>
@@ -148,6 +157,13 @@ const LABEL_ENH = {0:"C",1:"C#/Db",2:"D",3:"D#/Eb",4:"E",5:"F",6:"F#/Gb",7:"G",8
 const FIFTH_ORDER_PCS = (()=>{ let a=[],pc=0; for(let k=0;k<12;k++){ a.push(pc); pc=(pc+7)%12; } return a; })();
 const FIFTH_INDEX = (()=>{ const m=Array(12).fill(0); FIFTH_ORDER_PCS.forEach((pc,i)=>m[pc]=i); return m; })();
 const FIFTH_LABELS = FIFTH_ORDER_PCS.map(pc=>LABEL_ENH[pc]);
+
+// 音名ごとの背景色（RGB）
+const NOTE_BG = {
+  0:[191,28,28],   1:[191,109,28], 2:[191,191,28], 3:[109,191,28],
+  4:[28,191,28],   5:[28,191,109], 6:[28,191,191], 7:[28,109,191],
+  8:[28,28,191],   9:[109,28,191],10:[191,28,191],11:[191,28,109]
+};
 
 /* ===== UI refs ===== */
 const uiPanel = document.getElementById('ui');
@@ -196,6 +212,16 @@ const info = document.getElementById('info');
 const midiStat = document.getElementById('midiStat');
 const midiLast = document.getElementById('midiLast');
 
+// 追加コントロール参照
+const lineASlider = document.getElementById('lineA');
+const lineAVal = document.getElementById('lineAVal');
+const waterASlider = document.getElementById('waterA');
+const waterAVal = document.getElementById('waterAVal');
+const labelSizeSlider = document.getElementById('labelSize');
+const labelSizeVal = document.getElementById('labelSizeVal');
+const labelBGSlider = document.getElementById('labelBG');
+const labelBGVal = document.getElementById('labelBGVal');
+
 /* ===== UI state ===== */
 let maxNotes = parseInt(detSlider.value,10);
 detSlider.oninput = ()=>{ maxNotes = parseInt(detSlider.value,10); detVal.textContent = `${maxNotes}`; };
@@ -224,6 +250,19 @@ function fmtTime(sec){ sec=Math.max(0,sec); const m=Math.floor(sec/60), s=Math.f
 function shortestDelta(a,b){ let d=b-a; while(d> Math.PI) d-=2*Math.PI; while(d<=-Math.PI) d+=2*Math.PI; return d; }
 function hex(n){ return n.toString(16).padStart(2,'0'); }
 function updateMIDIStat(t){ midiStat.textContent = 'MIDI: ' + t; }
+
+/* 追加パラメータ */
+let linkAlpha = parseInt(lineASlider.value,10)/100; lineAVal.textContent=`${Math.round(linkAlpha*100)}%`;
+lineASlider.oninput = ()=>{ linkAlpha = parseInt(lineASlider.value,10)/100; lineAVal.textContent=`${Math.round(linkAlpha*100)}%`; };
+
+let waterAlpha = parseInt(waterASlider.value,10)/100; waterAVal.textContent=`${Math.round(waterAlpha*100)}%`;
+waterASlider.oninput = ()=>{ waterAlpha = parseInt(waterASlider.value,10)/100; waterAVal.textContent=`${Math.round(waterAlpha*100)}%`; };
+
+let labelFontPx = parseInt(labelSizeSlider.value,10); labelSizeVal.textContent=`${labelFontPx}px`;
+labelSizeSlider.oninput = ()=>{ labelFontPx = parseInt(labelSizeSlider.value,10); labelSizeVal.textContent=`${labelFontPx}px`; };
+
+let labelBgAlpha = parseInt(labelBGSlider.value,10)/100; labelBGVal.textContent=`${Math.round(labelBgAlpha*100)}%`;
+labelBGSlider.oninput = ()=>{ labelBgAlpha = parseInt(labelBGSlider.value,10)/100; labelBGVal.textContent=`${Math.round(labelBgAlpha*100)}%`; };
 
 /* ===== Tonality estimator (water, no EMA) ===== */
 function estimateTonalityAngle(){
@@ -260,8 +299,8 @@ let worldRot = 0;
 let diskAngle = 0;
 let diskOmega = 0;     // rad/s
 let diskMass = Math.pow(10, parseFloat(massSlider.value)); // ≈0.37
-let dampPerSec = parseInt(dampSlider.value,10)/100;        // 0.95
-let excludeMode = excludeSel.value; // 'unfilled'
+let dampPerSec = parseInt(dampSlider.value,10)/100;        // 0.99
+let excludeMode = excludeSel.value;
 
 gravSlider.oninput = ()=>{ gravIdx = parseInt(gravSlider.value,10); gravAngle = baseAngleFromFifthIndex(gravIdx); gravVal.textContent = `${gravIdx*30}°`; };
 orientVal.textContent = (ORIENT===1?'normal':'reverse');
@@ -308,7 +347,7 @@ function drawNotes(points){
 
   if(points.length>=2){
     const xs = points.map(p=>({m:p.midi,f:midiToHz(p.midi)})).sort((a,b)=>a.f-b.f);
-    ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.8)';
+    ctx.lineWidth=2; ctx.strokeStyle=`rgba(255,255,255,${linkAlpha})`;
     for(let i=0;i<xs.length-1;i++){
       const m0=xs[i].m,f0=xs[i].f,m1=xs[i+1].m,f1=xs[i+1].f;
       const r0=radiusFromFreq(f0,rMax,step), th0=mapAngleByFifths(m0);
@@ -385,25 +424,40 @@ function draw(){
   ctx.strokeStyle='rgba(255,255,255,0.14)';
   for(let i=0;i<=OCTAVES;i++){ const r=rMax - i*step; ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI); ctx.stroke(); }
 
-  // ラベル（worldRot 加算）
-  ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.font = `${12*devicePixelRatio}px system-ui`;
+  // ラベル（背景つき）
+  const fontPx = labelFontPx * devicePixelRatio;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font = `${fontPx}px system-ui`;
   for(let k2=0;k2<12;k2++){
     const ang = baseAngleFromFifthIndex(k2) + worldRot;
     const tx = cx + (rMax+18)*Math.cos(ang), ty = cy - (rMax+18)*Math.sin(ang);
-    ctx.fillText(FIFTH_LABELS[k2], tx, ty);
+    const text = FIFTH_LABELS[k2];
+
+    // 背景色（PCで引く）
+    const pc = FIFTH_ORDER_PCS[k2];
+    const [r,g,b] = NOTE_BG[pc];
+    const m = ctx.measureText(text);
+    const padX = 6*devicePixelRatio, padY = 3*devicePixelRatio;
+    const wbg = m.width + padX*2;
+    const hbg = fontPx + padY*2;
+
+    ctx.fillStyle = `rgba(${r},${g},${b},${labelBgAlpha})`;
+    ctx.fillRect(tx - wbg/2, ty - hbg/2, wbg, hbg);
+
+    ctx.fillStyle='rgba(255,255,255,0.95)';
+    ctx.fillText(text, tx, ty);
   }
 
-  // 調性半円（disk:重力方向固定 / water:反転）
+  // 調性半円（disk:重力方向固定 / water:反転）— 透明度可変
   const halfCenter = (frameSel.value==='disk') ? gravAngle : (2*ANG0 - toneCenter);
   ctx.save(); ctx.translate(cx,cy);
   ctx.beginPath(); ctx.moveTo(0,0);
   ctx.arc(0,0, rMax+6, halfCenter - Math.PI/2, halfCenter + Math.PI/2, false);
   ctx.closePath();
-  ctx.fillStyle='rgba(0,128,255,0.12)'; ctx.fill();
+  ctx.fillStyle=`rgba(0,128,255,${waterAlpha})`; ctx.fill();
   ctx.beginPath();
   ctx.arc(0,0, rMax+6, halfCenter - Math.PI/2, halfCenter + Math.PI/2);
-  ctx.strokeStyle='rgba(0,128,255,0.35)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.strokeStyle=`rgba(0,128,255,${waterAlpha})`; ctx.lineWidth=2; ctx.stroke();
   ctx.restore();
 
   if(hasInput) drawNotes(points);
